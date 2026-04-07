@@ -1,6 +1,7 @@
 import json
 import os
 import requests
+from http.server import BaseHTTPRequestHandler
 
 SIMPLE_KW = ['bonjour','salut','hello','hi','merci','ok','oui','non','quoi','what','who','when','where','pourquoi','why','how','comment','est-ce','is it','define','definis','traduis','translate','resume','summarize','liste','list']
 COMPLEX_KW = ['architecture','system design','analyse','analyze','refactor','optimise','optimize','securite','security','deploy','deployer','infrastructure','scalable','scalability','debug','debugger','microservice','kubernetes','docker','ci/cd','pipeline','algorithme','algorithm','complexite','complexity','performance','benchmark']
@@ -81,81 +82,85 @@ def call_anthropic(api_key, messages):
     resp.raise_for_status()
     return resp.json()["content"][0]["text"]
 
-def handler(request):
-    if request.method == "OPTIONS":
-        return Response("", headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type"
-        })
+class handler(BaseHTTPRequestHandler):
 
-    try:
-        data = json.loads(request.body)
-    except Exception:
-        return Response(json.dumps({"error": "Invalid JSON"}), status=400, headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"})
+    def log_message(self, format, *args):
+        pass
 
-    action = data.get("action", "chat")
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
 
-    if action == "classify":
-        msg = data.get("message", "")
-        level = classify(msg)
-        model_map = {"simple": "llama3", "medium": "gpt4o", "complex": "claude"}
-        label_map = {"llama3": "Llama 3.3 70B (Groq)", "gpt4o": "GPT-4o mini (OpenAI)", "claude": "Claude Opus (Anthropic)"}
-        suggested = model_map.get(level, "gpt4o")
-        return Response(
-            json.dumps({"level": level, "suggested_model": suggested, "label": label_map[suggested]}),
-            headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
-        )
+    def send_json(self, status, obj):
+        body = json.dumps(obj).encode('utf-8')
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
-    messages = data.get("messages", [])
-    model = data.get("model", "llama3")
-    api_keys = data.get("api_keys", {})
-
-    try:
-        if model == "llama3":
-            key = api_keys.get("groq") or os.environ.get("GROQ_API_KEY", "")
-            if not key:
-                return Response(json.dumps({"error": "Clé API Groq manquante. Configurez-la dans 'Clés API'."}), status=400, headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"})
-            reply = call_groq(key, messages)
-        elif model == "gpt4o":
-            key = api_keys.get("openai") or os.environ.get("OPENAI_API_KEY", "")
-            if not key:
-                return Response(json.dumps({"error": "Clé API OpenAI manquante. Configurez-la dans 'Clés API'."}), status=400, headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"})
-            reply = call_openai(key, messages)
-        elif model == "claude":
-            key = api_keys.get("anthropic") or os.environ.get("ANTHROPIC_API_KEY", "")
-            if not key:
-                return Response(json.dumps({"error": "Clé API Anthropic manquante. Configurez-la dans 'Clés API'."}), status=400, headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"})
-            reply = call_anthropic(key, messages)
-        else:
-            return Response(json.dumps({"error": f"Modèle inconnu: {model}"}), status=400, headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"})
-
-        return Response(
-            json.dumps({"reply": reply, "model": model}),
-            headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
-        )
-
-    except requests.exceptions.HTTPError as e:
-        status_code = e.response.status_code if e.response else 0
+    def do_POST(self):
         try:
-            err_body = e.response.json()
-            err_msg = err_body.get("error", {}).get("message", str(e))
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length)
+            data = json.loads(body)
         except Exception:
-            err_msg = str(e)
-        return Response(
-            json.dumps({"error": f"Erreur API ({status_code}): {err_msg}"}),
-            status=502,
-            headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
-        )
-    except requests.exceptions.Timeout:
-        return Response(
-            json.dumps({"error": "Timeout: le modèle n'a pas répondu dans les 25 secondes."}),
-            status=504,
-            headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
-        )
-    except Exception as e:
-        return Response(
-            json.dumps({"error": f"Erreur interne: {str(e)}"}),
-            status=500,
-            headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
-        )
+            self.send_json(400, {"error": "Invalid JSON"})
+            return
+
+        action = data.get("action", "chat")
+
+        if action == "classify":
+            msg = data.get("message", "")
+            level = classify(msg)
+            model_map = {"simple": "llama3", "medium": "gpt4o", "complex": "claude"}
+            label_map = {"llama3": "Llama 3.3 70B (Groq)", "gpt4o": "GPT-4o mini (OpenAI)", "claude": "Claude Opus (Anthropic)"}
+            suggested = model_map.get(level, "gpt4o")
+            self.send_json(200, {"level": level, "suggested_model": suggested, "label": label_map[suggested]})
+            return
+
+        messages = data.get("messages", [])
+        model = data.get("model", "llama3")
+        api_keys = data.get("api_keys", {})
+
+        try:
+            if model == "llama3":
+                key = api_keys.get("groq") or os.environ.get("GROQ_API_KEY", "")
+                if not key:
+                    self.send_json(400, {"error": "Clé API Groq manquante. Configurez-la dans 'Clés API'."})
+                    return
+                reply = call_groq(key, messages)
+            elif model == "gpt4o":
+                key = api_keys.get("openai") or os.environ.get("OPENAI_API_KEY", "")
+                if not key:
+                    self.send_json(400, {"error": "Clé API OpenAI manquante. Configurez-la dans 'Clés API'."})
+                    return
+                reply = call_openai(key, messages)
+            elif model == "claude":
+                key = api_keys.get("anthropic") or os.environ.get("ANTHROPIC_API_KEY", "")
+                if not key:
+                    self.send_json(400, {"error": "Clé API Anthropic manquante. Configurez-la dans 'Clés API'."})
+                    return
+                reply = call_anthropic(key, messages)
+            else:
+                self.send_json(400, {"error": f"Modele inconnu: {model}"})
+                return
+
+            self.send_json(200, {"reply": reply, "model": model})
+
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response else 0
+            try:
+                err_body = e.response.json()
+                err_msg = err_body.get("error", {}).get("message", str(e))
+            except Exception:
+                err_msg = str(e)
+            self.send_json(502, {"error": f"Erreur API ({status_code}): {err_msg}"})
+        except requests.exceptions.Timeout:
+            self.send_json(504, {"error": "Timeout: le modele n a pas repondu dans les 25 secondes."})
+        except Exception as e:
+            self.send_json(500, {"error": f"Erreur interne: {str(e)}"})
