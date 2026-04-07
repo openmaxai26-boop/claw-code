@@ -20,9 +20,10 @@ class handler(BaseHTTPRequestHandler):
             body = self.rfile.read(content_length)
             data = json.loads(body)
 
-            api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+            # Accept api key from request body OR from environment variable
+            api_key = data.get('api_key_override', '') or os.environ.get('ANTHROPIC_API_KEY', '')
             if not api_key:
-                self._json_response(500, {'error': 'ANTHROPIC_API_KEY not configured'})
+                self._json_response(500, {'error': 'No API key. Set ANTHROPIC_API_KEY env var or pass api_key_override.'})
                 return
 
             messages = data.get('messages', [])
