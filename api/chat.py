@@ -1,11 +1,9 @@
 import json
 import os
-import urllib.request
-import urllib.error
-from http.server import BaseHTTPRequestHandler
+import requests
 
-SIMPLE_KW = ['bonjour','salut','hello','hi','merci','ok','oui','non','quoi','what','who','when','where','how much','combien','quelle heure','quel jour','meteo','blague','joke','traduis','translate','definis','define','simple','rapide','resume','summarize','liste','list','donne moi','give me']
-COMPLEX_KW = ['architecture','system design','analyse','analyze','refactor','optimise','optimize','debug','performance','securite','security','algorithme','algorithm','complexe','complex','avance','advanced','integre','integrate','deploie','deploy','infrastructure','machine learning','deep learning','neural','audit','review complet','full review','strategie','strategy','concurrent','threading','async','microservice']
+SIMPLE_KW = ['bonjour','salut','hello','hi','merci','ok','oui','non','quoi','what','who','when','where','pourquoi','why','how','comment','est-ce','is it','define','definis','traduis','translate','resume','summarize','liste','list']
+COMPLEX_KW = ['architecture','system design','analyse','analyze','refactor','optimise','optimize','securite','security','deploy','deployer','infrastructure','scalable','scalability','debug','debugger','microservice','kubernetes','docker','ci/cd','pipeline','algorithme','algorithm','complexite','complexity','performance','benchmark']
 
 def classify(msg):
     m = msg.lower()
@@ -15,119 +13,149 @@ def classify(msg):
     for kw in SIMPLE_KW:
         if kw in m:
             return 'simple'
-    n = len(msg.split())
-    if n <= 12:
-        return 'simple'
-    if n <= 50:
+    if len(msg) > 300:
+        return 'complex'
+    if len(msg) > 80:
         return 'medium'
-    return 'complex'
+    return 'simple'
 
-def suggestion(complexity):
-    if complexity == 'simple':
-        return {'provider':'groq','model':'llama-3.3-70b-versatile','label':'Llama 3.3 70B (Groq - gratuit)','reason':'Tache simple — rapide et gratuit','tier':'free'}
-    if complexity == 'medium':
-        return {'provider':'openai','model':'gpt-4o-mini','label':'GPT-4o mini (OpenAI)','reason':'Tache moderee — bon equilibre qualite/cout','tier':'low-cost'}
-    return {'provider':'anthropic','model':'claude-opus-4-5','label':'Claude Opus (Anthropic)','reason':'Tache complexe — meilleure qualite disponible','tier':'premium'}
+def call_groq(api_key, messages):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": "ClawCode/1.0"
+    }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": messages,
+        "max_tokens": 2048,
+        "temperature": 0.7
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=25)
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
 
-def call_api(provider, model, api_key, messages, system, max_tokens):
-    if provider == 'anthropic':
-        payload = {'model':model,'max_tokens':max_tokens,'system':system,'messages':messages}
-        req = urllib.request.Request(
-            'https://api.anthropic.com/v1/messages',
-            data=json.dumps(payload).encode(),
-            headers={'x-api-key':api_key,'anthropic-version':'2023-06-01','content-type':'application/json'},
-            method='POST'
+def call_openai(api_key, messages):
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": "ClawCode/1.0"
+    }
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": messages,
+        "max_tokens": 2048,
+        "temperature": 0.7
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=25)
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+def call_anthropic(api_key, messages):
+    url = "https://api.anthropic.com/v1/messages"
+    system_msg = ""
+    filtered = []
+    for m in messages:
+        if m["role"] == "system":
+            system_msg = m["content"]
+        else:
+            filtered.append(m)
+    if not filtered:
+        filtered = messages
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+        "User-Agent": "ClawCode/1.0"
+    }
+    payload = {
+        "model": "claude-opus-4-5",
+        "messages": filtered,
+        "max_tokens": 2048
+    }
+    if system_msg:
+        payload["system"] = system_msg
+    resp = requests.post(url, headers=headers, json=payload, timeout=25)
+    resp.raise_for_status()
+    return resp.json()["content"][0]["text"]
+
+def handler(request):
+    if request.method == "OPTIONS":
+        return Response("", headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type"
+        })
+
+    try:
+        data = json.loads(request.body)
+    except Exception:
+        return Response(json.dumps({"error": "Invalid JSON"}), status=400, headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"})
+
+    action = data.get("action", "chat")
+
+    if action == "classify":
+        msg = data.get("message", "")
+        level = classify(msg)
+        model_map = {"simple": "llama3", "medium": "gpt4o", "complex": "claude"}
+        label_map = {"llama3": "Llama 3.3 70B (Groq)", "gpt4o": "GPT-4o mini (OpenAI)", "claude": "Claude Opus (Anthropic)"}
+        suggested = model_map.get(level, "gpt4o")
+        return Response(
+            json.dumps({"level": level, "suggested_model": suggested, "label": label_map[suggested]}),
+            headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
         )
-        with urllib.request.urlopen(req, timeout=25) as r:
-            d = json.loads(r.read())
-        return d['content'][0]['text'], d.get('usage',{})
-    else:
-        url = 'https://api.groq.com/openai/v1/chat/completions' if provider == 'groq' else 'https://api.openai.com/v1/chat/completions'
-        msgs = [{'role':'system','content':system}] + messages
-        payload = {'model':model,'messages':msgs,'max_tokens':max_tokens}
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode(),
-            headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json'},
-            method='POST'
+
+    messages = data.get("messages", [])
+    model = data.get("model", "llama3")
+    api_keys = data.get("api_keys", {})
+
+    try:
+        if model == "llama3":
+            key = api_keys.get("groq") or os.environ.get("GROQ_API_KEY", "")
+            if not key:
+                return Response(json.dumps({"error": "Clé API Groq manquante. Configurez-la dans 'Clés API'."}), status=400, headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"})
+            reply = call_groq(key, messages)
+        elif model == "gpt4o":
+            key = api_keys.get("openai") or os.environ.get("OPENAI_API_KEY", "")
+            if not key:
+                return Response(json.dumps({"error": "Clé API OpenAI manquante. Configurez-la dans 'Clés API'."}), status=400, headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"})
+            reply = call_openai(key, messages)
+        elif model == "claude":
+            key = api_keys.get("anthropic") or os.environ.get("ANTHROPIC_API_KEY", "")
+            if not key:
+                return Response(json.dumps({"error": "Clé API Anthropic manquante. Configurez-la dans 'Clés API'."}), status=400, headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"})
+            reply = call_anthropic(key, messages)
+        else:
+            return Response(json.dumps({"error": f"Modèle inconnu: {model}"}), status=400, headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"})
+
+        return Response(
+            json.dumps({"reply": reply, "model": model}),
+            headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
         )
-        with urllib.request.urlopen(req, timeout=25) as r:
-            d = json.loads(r.read())
-        c = d['choices'][0]['message']['content']
-        u = d.get('usage',{})
-        return c, {'input_tokens':u.get('prompt_tokens',0),'output_tokens':u.get('completion_tokens',0)}
 
-class handler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
-
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self._cors()
-        self.end_headers()
-
-    def do_POST(self):
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code if e.response else 0
         try:
-            n = int(self.headers.get('Content-Length',0))
-            data = json.loads(self.rfile.read(n))
-        except Exception as e:
-            self._resp(400, {'error': 'Invalid JSON: ' + str(e)})
-            return
-
-        try:
-            action = data.get('action','chat')
-
-            if action == 'classify':
-                msg = data.get('message','')
-                c = classify(msg)
-                self._resp(200, {'complexity':c,'suggestion':suggestion(c)})
-                return
-
-            provider = data.get('provider','groq')
-            model = data.get('model','llama-3.3-70b-versatile')
-            messages = data.get('messages',[])
-            max_tokens = min(int(data.get('max_tokens',2048)), 4096)
-            system = data.get('system','You are Claw Code, a helpful AI assistant. Respond in the same language as the user.')
-            keys = data.get('api_keys',{})
-
-            key_map = {'groq': keys.get('groq','') or os.environ.get('GROQ_API_KEY',''),
-                       'openai': keys.get('openai','') or os.environ.get('OPENAI_API_KEY',''),
-                       'anthropic': keys.get('anthropic','') or os.environ.get('ANTHROPIC_API_KEY','')}
-            api_key = key_map.get(provider,'')
-
-            if not api_key:
-                self._resp(400, {'error': 'Cle API manquante pour: ' + provider + '. Verifiez vos cles dans le champ API.'})
-                return
-
-            if not messages:
-                self._resp(400, {'error': 'Aucun message fourni.'})
-                return
-
-            reply, usage = call_api(provider, model, api_key, messages, system, max_tokens)
-            self._resp(200, {'reply':reply,'model':model,'provider':provider,'usage':usage})
-
-        except urllib.error.HTTPError as e:
-            body = e.read().decode('utf-8','replace')
-            try:
-                err = json.loads(body)
-            except Exception:
-                err = {'message': body[:300]}
-            self._resp(e.code, {'error': err})
-        except urllib.error.URLError as e:
-            self._resp(502, {'error': 'Connexion impossible: ' + str(e.reason)})
-        except Exception as e:
-            self._resp(500, {'error': str(e)})
-
-    def _cors(self):
-        self.send_header('Access-Control-Allow-Origin','*')
-        self.send_header('Access-Control-Allow-Methods','POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers','Content-Type')
-
-    def _resp(self, status, data):
-        body = json.dumps(data, ensure_ascii=False).encode('utf-8')
-        self.send_response(status)
-        self._cors()
-        self.send_header('Content-Type','application/json; charset=utf-8')
-        self.send_header('Content-Length', str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+            err_body = e.response.json()
+            err_msg = err_body.get("error", {}).get("message", str(e))
+        except Exception:
+            err_msg = str(e)
+        return Response(
+            json.dumps({"error": f"Erreur API ({status_code}): {err_msg}"}),
+            status=502,
+            headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
+        )
+    except requests.exceptions.Timeout:
+        return Response(
+            json.dumps({"error": "Timeout: le modèle n'a pas répondu dans les 25 secondes."}),
+            status=504,
+            headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
+        )
+    except Exception as e:
+        return Response(
+            json.dumps({"error": f"Erreur interne: {str(e)}"}),
+            status=500,
+            headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
+        )
